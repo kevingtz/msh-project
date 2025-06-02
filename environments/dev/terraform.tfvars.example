@@ -1,0 +1,5 @@
+# Example Terraform variables for dev environment
+# Copy this file to terraform.tfvars and update with your actual values
+
+project_id = ""
+region     = "us-central1" 
