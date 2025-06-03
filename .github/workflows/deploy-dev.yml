@@ -1,0 +1,146 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - '**.tf'
+      - '**.py'
+      - 'modules/**'
+      - 'environments/dev/**'
+  workflow_dispatch:
+    inputs:
+      deploy_env:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+
+env:
+  TF_VERSION: "1.5.0"
+  ENVIRONMENT: "dev"
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    # Note: Remove environment reference until GitHub environments are configured
+    environment: development
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure GCP Credentials
+        uses: 'google-github-actions/auth@v1'
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_DEV }}
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+
+      - name: Enable GCP APIs
+        run: |
+          ./scripts/enable_apis.sh ${{ secrets.GCP_PROJECT_ID_DEV }}
+
+      - name: Terraform Init - Development
+        run: |
+          cd environments/dev
+          terraform init
+
+      - name: Terraform Plan - Development
+        id: plan
+        run: |
+          cd environments/dev
+          terraform plan -var="project_id=${{ secrets.GCP_PROJECT_ID_DEV }}" -out=tfplan
+
+      - name: Terraform Apply - Development
+        run: |
+          cd environments/dev
+          terraform apply tfplan
+
+      - name: Get Deployment Outputs
+        id: outputs
+        run: |
+          cd environments/dev
+          echo "function_url=$(terraform output -raw function_url)" >> $GITHUB_OUTPUT
+          echo "load_balancer_url=$(terraform output -raw load_balancer_url)" >> $GITHUB_OUTPUT
+
+      - name: Test Deployment
+        run: |
+          echo "Testing Cloud Function..."
+          curl -f ${{ steps.outputs.outputs.function_url }} || exit 1
+          
+          echo "Testing Load Balancer (may take time to be ready)..."
+          # Wait for load balancer to be ready (with timeout)
+          for i in {1..30}; do
+            if curl -f ${{ steps.outputs.outputs.load_balancer_url }} 2>/dev/null; then
+              echo "Load balancer is ready!"
+              break
+            fi
+            echo "Waiting for load balancer... ($i/30)"
+            sleep 30
+          done
+
+      - name: Post-deployment notification
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { data: commit } = await github.rest.git.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha
+            });
+            
+            const message = `🚀 **Deployment to Development Successful!**
+            
+            **Environment:** Development
+            **Commit:** ${context.sha.substring(0, 7)} - ${commit.message.split('\n')[0]}
+            **Author:** ${commit.author.name}
+            
+            **Endpoints:**
+            - 🔗 [Cloud Function](${{ steps.outputs.outputs.function_url }})
+            - 🌐 [Load Balancer](${{ steps.outputs.outputs.load_balancer_url }})
+            
+            **Deployed at:** ${new Date().toISOString()}`;
+            
+            github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: message
+            });
+
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+
+      - name: Configure GCP Credentials
+        uses: 'google-github-actions/auth@v1'
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_DEV }}
+
+      - name: Run Integration Tests
+        env:
+          GOOGLE_PROJECT: ${{ secrets.GCP_PROJECT_ID_DEV }}
+        run: |
+          cd terratest
+          go mod download
+          go test -v -run TestHelloWorld -timeout 30m 

@@ -38,4 +38,29 @@ Thumbs.db
 go.sum
 
 # Logs
-*.log 
+*.log
+
+# GitHub Actions / CI/CD
+github-actions-*.json
+*.key
+*.p12
+service-account-key.json
+gcp-key.json
+
+# Security scanning results
+checkov.sarif
+tfsec-results.json
+security-scan-results/
+
+# Cost estimation
+infracost-report.json
+cost-estimation.json
+
+# Temporary CI files
+terraform-plan-output.txt
+deployment-logs/
+ci-artifacts/
+
+# Environment specific overrides
+.env.local
+.env.*.local 
